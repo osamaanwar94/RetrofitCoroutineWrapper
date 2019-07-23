@@ -1,11 +1,12 @@
 package com.tintash.retrofitcoroutinewrapper
 
 import androidx.annotation.IntDef
-import com.google.gson.Gson
-import com.google.gson.JsonArray
-import com.google.gson.JsonObject
-import com.google.gson.JsonSyntaxException
 import retrofit2.Response
+
+/**
+ * Network Result Layer
+ *
+ */
 
 /**
  * Response Code
@@ -13,33 +14,17 @@ import retrofit2.Response
 @Retention(AnnotationRetention.SOURCE)
 @IntDef(
     ResponseCode.ONGOING,
-    ResponseCode.SUCCESS,
-    ResponseCode.SUCCESS_NO_CONTENT,
-    ResponseCode.UNAUTHORIZED,
-    ResponseCode.UNPROCESSABLE_ENTITY,
-    ResponseCode.SERVER_ERROR,
-    ResponseCode.INVALID_EMAIL,
-    ResponseCode.FORCE_UPDATE,
-    ResponseCode.NETWORK_ERROR,
     ResponseCode.UNKNOWN_ERROR
 )
 annotation class ResponseCode {
     companion object {
         const val ONGOING = 0
-        const val SUCCESS = 200
-        const val SUCCESS_NO_CONTENT = 204
-        const val UNAUTHORIZED = 401
-        const val UNPROCESSABLE_ENTITY = 422
-        const val SERVER_ERROR = 500
-        const val INVALID_EMAIL = 404
-        const val FORCE_UPDATE = 426
-        const val NETWORK_ERROR = 503
-        const val UNKNOWN_ERROR = 512
+        const val UNKNOWN_ERROR = -1
     }
 }
 
 /**
- *
+ * Request Status
  */
 @Retention(AnnotationRetention.SOURCE)
 @IntDef(
@@ -59,28 +44,72 @@ annotation class RequestStatus {
  *
  * @param T Payload type
  */
-sealed class NetworkResult<out T> {
-    data class Success<out T : Any>(
+sealed class NetworkResult<out T, out E> {
+    data class Success<out T>(
         val code: Int,
         val data: T?
-    ) : NetworkResult<T>() {
-        constructor(response: Response<T>) : this(response.code(), response.body())
-    }
+    ) : NetworkResult<T, Nothing>()
 
-    data class Error(
+    data class Error<out E>(
         val code: Int,
         val isErrorConsumed: Boolean,
-        val parsedErrors: JsonArray?
-    ) : NetworkResult<Nothing>() {
-        constructor(response: Response<*>, isErrorConsumed: Boolean) : this(
-            response.code(),
-            isErrorConsumed,
-            response.parseErrors()
-        )
-    }
+        val parsedErrors: List<E>?
+    ) : NetworkResult<Nothing, E>()
+
+    companion object
 }
 
-inline fun <reified T> NetworkResult<T>.createResponseModel(): ResponseWrapper<T> {
+/**
+ *
+ * @param E
+ */
+interface ErrorParser<E> {
+    fun parseErrors(response: Response<*>): List<E>?
+}
+
+/**
+ *
+ */
+interface ErrorConsumer {
+    fun consumeError(response: Response<*>): Boolean
+
+    fun consumeException(e: Exception): Boolean
+}
+
+/**
+ *
+ * @receiver NetworkResult.Companion
+ * @param response Response<*>
+ * @param isErrorConsumed Boolean
+ * @param errorParser ErrorParser<E>?
+ * @return NetworkResult.Error<E>
+ */
+inline fun <reified E> NetworkResult.Companion.createError(
+    response: Response<*>,
+    isErrorConsumed: Boolean,
+    errorParser: ErrorParser<E>?
+): NetworkResult.Error<E> {
+    return NetworkResult.Error(response.code(), isErrorConsumed, errorParser?.parseErrors(response))
+}
+
+/**
+ *
+ * @receiver NetworkResult.Companion
+ * @param response Response<T>
+ * @return NetworkResult.Success<T>
+ */
+inline fun <reified T> NetworkResult.Companion.createSuccess(
+    response: Response<T>
+): NetworkResult.Success<T> {
+    return NetworkResult.Success(response.code(), response.body())
+}
+
+/**
+ *
+ * @receiver NetworkResult<T, E>
+ * @return ResponseWrapper<T, E>
+ */
+inline fun <reified T, E> NetworkResult<T, E>.createResponseModel(): ResponseWrapper<T, E> {
     return when (this) {
         is NetworkResult.Success -> {
             ResponseWrapper.createSuccess(code, data)
@@ -100,34 +129,43 @@ inline fun <reified T> NetworkResult<T>.createResponseModel(): ResponseWrapper<T
  * @property errors JsonArray? errors
  * @constructor
  */
-data class ResponseWrapper<T>(
+data class ResponseWrapper<T, E>(
     val responseCode: Int,
     val success: Boolean,
     val status: Int,
     val data: T?,
-    val errors: JsonArray?
+    val errors: List<E>?
 ) {
     companion object
 }
 
-inline fun <reified T> ResponseWrapper.Companion.createOnGoing(): ResponseWrapper<T> {
+/**
+ *
+ * @receiver ResponseWrapper.Companion
+ * @return ResponseWrapper<T, E>
+ */
+inline fun <reified T, E> ResponseWrapper.Companion.createOnGoing(): ResponseWrapper<T, E> {
     return ResponseWrapper(ResponseCode.ONGOING, false, RequestStatus.ONGOING, data = null, errors = null)
 }
 
-inline fun <reified T> ResponseWrapper.Companion.createSuccess(code: Int, data: T?): ResponseWrapper<T> {
+/**
+ *
+ * @receiver ResponseWrapper.Companion
+ * @param code Int
+ * @param data T?
+ * @return ResponseWrapper<T, E>
+ */
+inline fun <reified T, E> ResponseWrapper.Companion.createSuccess(code: Int, data: T?): ResponseWrapper<T, E> {
     return ResponseWrapper(code, true, RequestStatus.SUCCESS, data = data, errors = null)
 }
 
-inline fun <reified T> ResponseWrapper.Companion.createError(code: Int, errors: JsonArray?): ResponseWrapper<T> {
+/**
+ *
+ * @receiver ResponseWrapper.Companion
+ * @param code Int
+ * @param errors List<E>?
+ * @return ResponseWrapper<T, E>
+ */
+inline fun <reified T, E> ResponseWrapper.Companion.createError(code: Int, errors: List<E>?): ResponseWrapper<T, E> {
     return ResponseWrapper(code, false, RequestStatus.FAILED, data = null, errors = errors)
-}
-
-private fun Response<*>.parseErrors() = try {
-    val errorString = errorBody()?.string()
-    val error = Gson().fromJson(errorString, JsonObject::class.java)
-    error?.get("errors")?.asJsonArray
-} catch (e: JsonSyntaxException) {
-    JsonArray().also {
-        it.add("Sorry. Unable to access server. Try Again")
-    }
 }
